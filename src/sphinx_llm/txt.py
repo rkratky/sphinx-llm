@@ -409,7 +409,11 @@ class MarkdownGenerator:
                     if node.get("name") == "description" and node.get("content"):
                         return node["content"]
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to read html_meta description from doctree for '%s'; "
+                    "falling back to content-based description",
+                    docname,
+                )
 
         return self.extract_description_from_markdown(md_file)
 

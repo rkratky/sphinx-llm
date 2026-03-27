@@ -437,7 +437,7 @@ def test_content_fallback_used_when_no_html_meta(sphinx_build):
         )
         url = url_match.group(1)
         if url.startswith(("http://", "https://")):
-            http_base = (app.config._raw_config.get("markdown_http_base") or "").rstrip(
+            http_base = (getattr(app.config, "markdown_http_base", "") or "").rstrip(
                 "/"
             )
             rel_path = url[len(http_base) :].lstrip("/")
