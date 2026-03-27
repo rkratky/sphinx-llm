@@ -456,7 +456,6 @@ def test_get_docname_from_md_file(sphinx_build):
     app, _, _ = sphinx_build
     generator = MarkdownGenerator(app)
     # Simulate a md_build_dir so the helper can be exercised directly
-    import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
