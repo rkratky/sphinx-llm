@@ -370,3 +370,161 @@ def test_markdown_files_still_created_when_full_disabled(sphinx_build_no_llms_fu
         assert md_path.exists(), (
             f"Markdown file should still be created when llms-full.txt is disabled: {md_path}"
         )
+
+
+# ---------------------------------------------------------------------------
+# html_meta description tests
+# ---------------------------------------------------------------------------
+
+_HTML_META_DESCRIPTION = (
+    "A page demonstrating the use of html_meta for llms.txt descriptions."
+)
+_HTML_META_PAGE = "meta_example"
+
+
+def test_html_meta_description_used_in_llms_txt(sphinx_build):
+    """Test that a page's html_meta description is used in llms.txt when defined."""
+    _, build_dir, _ = sphinx_build
+
+    llms_txt_path = build_dir / "llms.txt"
+    content = llms_txt_path.read_text(encoding="utf-8")
+
+    # Find the line(s) referencing the meta_example page and check the description
+    meta_lines = [line for line in content.splitlines() if _HTML_META_PAGE in line]
+    assert meta_lines, f"No llms.txt entry found for page '{_HTML_META_PAGE}'"
+
+    for line in meta_lines:
+        assert _HTML_META_DESCRIPTION in line, (
+            f"html_meta description not found in llms.txt entry for '{_HTML_META_PAGE}'.\n"
+            f"Entry:    {line!r}\n"
+            f"Expected: {_HTML_META_DESCRIPTION!r}"
+        )
+
+
+def test_content_fallback_used_when_no_html_meta(sphinx_build):
+    """Test that pages without html_meta use content-based descriptions in llms.txt."""
+    app, build_dir, _ = sphinx_build
+
+    llms_txt_path = build_dir / "llms.txt"
+    content = llms_txt_path.read_text(encoding="utf-8")
+
+    # The 'apples' page has no html_meta; its llms.txt description should match
+    # the content-based extraction.  We derive the local markdown file path from
+    # the URL already recorded in llms.txt.  The URL may be relative or absolute
+    # (when markdown_http_base is configured), so we normalise accordingly.
+    apples_lines = [line for line in content.splitlines() if "apples" in line.lower()]
+    assert apples_lines, "No llms.txt entry found for 'apples' page"
+
+    for line in apples_lines:
+        url_match = re.search(r"\]\(([^)]+)\)", line)
+        desc_match = re.search(r"\):\s*(.+)$", line)
+        assert url_match and desc_match and desc_match.group(1).strip(), (
+            f"Could not parse llms.txt entry for 'apples': {line!r}"
+        )
+        url = url_match.group(1)
+        if url.startswith(("http://", "https://")):
+            http_base = (app.config._raw_config.get("markdown_http_base") or "").rstrip(
+                "/"
+            )
+            rel_path = url[len(http_base) :].lstrip("/")
+        else:
+            rel_path = url
+        apples_md = build_dir / rel_path
+        expected = MarkdownGenerator.extract_description_from_markdown(apples_md)
+        assert desc_match.group(1).strip() == expected, (
+            f"Expected content-based description {expected!r}, "
+            f"got {desc_match.group(1).strip()!r}"
+        )
+
+
+def test_get_docname_from_md_file(sphinx_build):
+    """Test that _get_docname_from_md_file returns correct Sphinx docnames."""
+    app, _, _ = sphinx_build
+    generator = MarkdownGenerator(app)
+    # Simulate a md_build_dir so the helper can be exercised directly
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        generator.md_build_dir = tmp_path
+
+        cases = {
+            tmp_path / "index.md": "index",
+            tmp_path / "apples.md": "apples",
+            tmp_path / "nested" / "example.md": "nested/example",
+        }
+        for md_file, expected_docname in cases.items():
+            md_file.parent.mkdir(parents=True, exist_ok=True)
+            md_file.touch()
+            assert generator._get_docname_from_md_file(md_file) == expected_docname
+
+
+def test_html_meta_description_used_in_incremental_build():
+    """Test that html_meta descriptions are used even when doctrees are cached.
+
+    This covers the case where Sphinx does NOT fire doctree-read for unchanged
+    pages (incremental / non-fresh builds).  A naive implementation that collects
+    descriptions only during doctree-read would silently fall back to the
+    content-based description in this scenario.
+    """
+    docs_source_dir = Path(__file__).parent.parent.parent.parent / "docs" / "source"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        # Both builds share the same outdir, doctreedir, and confoverrides so
+        # Sphinx's incremental environment cache is active for the second build.
+        # (A different outdir, or any changed config value registered with
+        # rebuild="env", triggers a full re-read and defeats the purpose of
+        # this test.  llms_txt_build_parallel=True matches the extension default
+        # to avoid the "config changed" detection.)
+        build_dir = tmp_path / "build"
+        doctree_dir = tmp_path / "doctrees"
+        overrides = {"llms_txt_build_parallel": True}
+
+        # ── First build (fresh) ── populates the doctree pickle cache
+        app1 = Sphinx(
+            srcdir=str(docs_source_dir),
+            confdir=str(docs_source_dir),
+            outdir=str(build_dir),
+            doctreedir=str(doctree_dir),
+            buildername="html",
+            warningiserror=False,
+            freshenv=True,
+            confoverrides=overrides,
+        )
+        app1.build()
+
+        # ── Second build (incremental) ── source unchanged; doctrees served from cache
+        doctree_read_pages: list[str] = []
+        app2 = Sphinx(
+            srcdir=str(docs_source_dir),
+            confdir=str(docs_source_dir),
+            outdir=str(build_dir),
+            doctreedir=str(doctree_dir),
+            buildername="html",
+            warningiserror=False,
+            freshenv=False,
+            confoverrides=overrides,
+        )
+        app2.connect(
+            "doctree-read",
+            lambda a, dt: doctree_read_pages.append(a.env.docname),
+        )
+        app2.build()
+
+        # Confirm we are actually exercising the incremental-build path
+        assert _HTML_META_PAGE not in doctree_read_pages, (
+            f"Expected '{_HTML_META_PAGE}' to be served from doctree cache, "
+            f"but doctree-read fired for it. Incremental build test is not valid."
+        )
+
+        # html_meta description must still appear in llms.txt
+        llms_txt = (build_dir / "llms.txt").read_text(encoding="utf-8")
+        meta_lines = [line for line in llms_txt.splitlines() if _HTML_META_PAGE in line]
+        assert meta_lines, f"No llms.txt entry found for page '{_HTML_META_PAGE}'"
+        for line in meta_lines:
+            assert _HTML_META_DESCRIPTION in line, (
+                f"html_meta description missing from llms.txt in incremental build.\n"
+                f"Entry:    {line!r}\n"
+                f"Expected: {_HTML_META_DESCRIPTION!r}"
+            )
